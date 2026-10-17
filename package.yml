@@ -1,0 +1,18 @@
+package: cloud.lazycat.app.hcpms
+version: 1.0.0-7
+name: HC 智慧物业
+description: "自托管的小区物业管理系统：房产与业主台账、物业费与停车费收费、报修工单、巡检打卡、公告与社区商圈，数据全部保存在你自己的微服上。"
+author: java110 / HomeCommunity
+license: Apache-2.0
+homepage: https://gitee.com/wuxw7/MicroCommunity
+min_os_version: 1.5.0
+locales:
+  zh:
+    name: "HC 智慧物业"
+    description: "自托管的小区物业管理系统：房产与业主台账、物业费与停车费收费、报修工单、巡检打卡、公告与社区商圈，数据全部保存在你自己的微服上。"
+  zh_CN:
+    name: "HC 智慧物业"
+    description: "自托管的小区物业管理系统：房产与业主台账、物业费与停车费收费、报修工单、巡检打卡、公告与社区商圈，数据全部保存在你自己的微服上。"
+  en:
+    name: "HC Property Management"
+    description: "Self-hosted residential property management: housing and owner records, property and parking fee billing, repair work orders, inspection check-ins, notices and community services. All data stays on your own microserver."

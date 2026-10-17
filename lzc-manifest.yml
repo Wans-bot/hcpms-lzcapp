@@ -1,0 +1,157 @@
+# HC 智慧物业（MicroCommunity）· 懒猫 LPK V2 运行清单
+#
+# 形态：单 JVM springboot 变体（MicroCommunityBoot.jar，端口 8008）+ MySQL 8 + Redis + 前端 nginx。
+# 上游只提供源码（无官方镜像），本包的两处镜像由 Dockerfile.app / Dockerfile.web 自建。
+# 数据库首次启动由自定义镜像 hcpms-db 的 docker-entrypoint-initdb.d 导入 docs/db/TT.sql（含演示数据）。
+usage: |
+  打开应用即可使用小区物业管理系统。默认管理员账号 admin，密码 admin，请首次登录后在「系统管理 → 用户管理」中修改。
+
+  首次启动会导入演示数据（小区、楼栋、房屋、业主与收费规则），MySQL 初始化约 1 至 2 分钟，期间页面显示「启动中」。
+  常用模块：房产与业主台账、物业费与停车费收费、报修工单、巡检打卡、公告、办公与报表。
+
+  数据全部保存在你自己的微服上：MySQL 数据在应用数据目录，卸载应用不会删除；
+  报修与巡检的照片上传走懒猫统一文件窗口，可选择本地文件或微服网盘。
+
+application:
+  subdomain: hcpms
+  upstreams:
+    # 后端接口直连后端服务（避免在 web 镜像里写死后端主机名，nginx 只发静态文件）
+    - location: /app/
+      backend: http://backend.cloud.lazycat.app.hcpms.lzcapp:8008
+      disable_trim_location: true
+    - location: /callComponent/
+      backend: http://backend.cloud.lazycat.app.hcpms.lzcapp:8008
+      disable_trim_location: true
+    - location: /
+      backend: http://web.cloud.lazycat.app.hcpms.lzcapp:80
+      disable_trim_location: true
+  health_check:
+    # 首次启动要建库、导入 8.7 MB 演示数据并等 Spring 上下文就绪，给足等待时间。
+    test_url: http://web.cloud.lazycat.app.hcpms.lzcapp:80/
+    start_period: 600s
+    timeout: 10s
+  injects:
+    # ── 网盘文件桥（request 阶段，官方《自动拦截文件选择器》专题）───────────
+    - id: lazycat-file-bridge
+      'on': request
+      auth_required: false
+      when:
+        - /__lazycat_file_bridge/*
+      do:
+        - src: |
+            const bridgePrefix = "/__lazycat_file_bridge";
+            const requestHost = String(ctx.request.host || "").split(":")[0].toLowerCase();
+            const firstDot = requestHost.indexOf(".");
+            const method = String(ctx.request.method || "").toUpperCase();
+            if (firstDot <= 0 || !requestHost.endsWith(".heiyu.space") ||
+                !["GET", "HEAD", "PUT"].includes(method)) {
+              ctx.response.send(["GET", "HEAD", "PUT"].includes(method) ? 400 : 405,
+                "Invalid LazyCat file bridge request");
+              return;
+            }
+            const boxDomain = requestHost.slice(firstDot + 1);
+            ctx.headers.del("Origin");
+            ctx.headers.del("Referer");
+            ctx.proxy.to("https://file." + boxDomain, {
+              path: "/files/home" + ctx.request.path.slice(bridgePrefix.length),
+              query: ctx.request.raw_query,
+              use_target_host: true,
+              timeout_ms: 120000,
+              on_fail: "error",
+            });
+    # ── 免密登录（browser 阶段）──────────────────────────────────────────────
+    # HC 的 Web 登录接口只在 app-id=WEB_APP_ID 时校验图形验证码；注入改用物业员工
+    # app-id 登录内置账号并写入会话（token/user/特权/小区），登录页由此直接进主页。
+    - id: hcpms-autologin
+      'on': browser
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/hcpms-autologin.js
+    # ── 官方网盘文件选择器（browser 阶段）────────────────────────────────────
+    # 报修/巡检的照片上传是 <input type=file>，由 fileInput 钩子接管。
+    - id: open-save-chooser
+      'on': browser
+      auth_required: false
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
+          params:
+            diskRoot: /_lzc/files/home
+            fileBridgeRoot: /__lazycat_file_bridge
+            fallbackMime: application/octet-stream
+            locale: auto
+            hooks:
+              fileSystemAccess: true
+              fileInput: true
+              downloadAnchor: true
+
+services:
+  mysql:
+    image: registry.lazycat.cloud/wans/hcpms-db2-1792112730:e52aeb4e125a5594
+    # sql-mode 去掉 STRICT_TRANS_TABLES：上游演示数据里的 car_num 等字段在严格模式下会 1406 报错，
+    # 导入中断会让首次启动失败；非严格模式按上游本意截断写入。
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci --default-authentication-plugin=mysql_native_password --sql-mode=NO_ENGINE_SUBSTITUTION --max_connections=300
+    environment:
+      - MYSQL_ROOT_PASSWORD=hc_root_lzc_2026
+      - MYSQL_DATABASE=tt
+      - MYSQL_USER=TT
+      - MYSQL_PASSWORD=hc12345678
+      - TZ=Asia/Shanghai
+    binds:
+      - /lzcapp/var/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -phc_root_lzc_2026 --silent || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+  redis:
+    image: registry.lazycat.cloud/wans/library/redis:45d185d80f68241e
+    command: redis-server --requirepass hc
+    environment:
+      - TZ=Asia/Shanghai
+    binds:
+      - /lzcapp/var/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "hc", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  backend:
+    image: registry.lazycat.cloud/wans/hcpms-app-1792086935:8d8362795846b609
+    # 配置走环境变量：命令串里带 & 的 JDBC URL 会被平台当作后台运算符截断（实测 Cmd 被切到 useUnicode=true）。
+    command: java -Xms512m -Xmx1024m -Dfile.encoding=UTF-8 -jar /app/app.jar --spring.profiles.active=dev
+    environment:
+      - TZ=Asia/Shanghai
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql.cloud.lazycat.app.hcpms.lzcapp:3306/tt?useUnicode=true&characterEncoding=utf-8&serverTimezone=GMT%2B8
+      - SPRING_DATASOURCE_USERNAME=TT
+      - SPRING_DATASOURCE_PASSWORD=hc12345678
+      - SPRING_REDIS_HOST=redis.cloud.lazycat.app.hcpms.lzcapp
+      - SPRING_REDIS_PASSWORD=hc
+      - SPRING_REDIS_DATABASE=8
+    depends_on:
+      - mysql
+      - redis
+    healthcheck:
+      # JRE 镜像里没有 curl/wget，用 bash 的 /dev/tcp 做端口存活探测，不额外装工具。
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8008' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+  web:
+    image: registry.lazycat.cloud/wans/hcpms-web-1792086935:267c2200ef28cd27
+    environment:
+      - TZ=Asia/Shanghai
+    depends_on:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

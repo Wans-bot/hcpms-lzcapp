@@ -1,0 +1,10 @@
+manifest: ./lzc-manifest.yml
+
+# contentdir: 注入脚本与静态资源（两条镜像在盒子上由 Dockerfile.app / Dockerfile.web 构建）
+contentdir: ./content
+
+# pkgout: lpk 包的输出路径
+pkgout: ./.lazycat-build/
+
+# icon: 上游官方图标（pc-web/public/img/logoico.png 原样复制）
+icon: ./icon.png
